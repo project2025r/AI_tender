@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -9,7 +9,9 @@ from qdrant_client.models import (
     Filter,
     FieldCondition,
     MatchValue,
-    MatchAny
+    MatchAny,
+    Range,
+    MatchText
 )
 from app.config import get_settings
 from app.services.document_processor import DocumentChunk
@@ -67,6 +69,18 @@ class VectorStoreService:
                     logger.error(f"Error ensuring collection after {max_retries} attempts: {e}")
                     raise
     
+    def _generate_point_id(self, chunk: DocumentChunk) -> int:
+        """Generate a unique point ID for a chunk"""
+        # Create a unique identifier based on document_id, chunk_id, and granularity
+        id_str = f"{chunk.metadata['document_id']}_{chunk.metadata['chunk_id']}"
+        
+        # Add granularity if available
+        if 'granularity' in chunk.metadata:
+            id_str += f"_{chunk.metadata['granularity']}"
+            
+        # Hash and ensure it's positive (Qdrant requires positive integers)
+        return hash(id_str) & 0x7FFFFFFFFFFFFFFF
+    
     def add_chunks(self, chunks: List[DocumentChunk], embeddings: List[List[float]]):
         """Add document chunks with embeddings to Qdrant"""
         if len(chunks) != len(embeddings):
@@ -74,18 +88,24 @@ class VectorStoreService:
         
         points = []
         for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+            # Create a comprehensive payload with all available metadata
+            payload = {
+                'text': chunk.text,
+                'document_id': chunk.metadata['document_id'],
+                'filename': chunk.metadata['filename'],
+                'file_type': chunk.metadata['file_type'],
+                'chunk_id': chunk.metadata['chunk_id'],
+            }
+            
+            # Add optional metadata fields if present
+            for key in ['page_number', 'sheet_name', 'section_title', 'granularity', 'token_count']:
+                if key in chunk.metadata:
+                    payload[key] = chunk.metadata[key]
+            
             point = PointStruct(
-                id=hash(f"{chunk.metadata['document_id']}_{chunk.metadata['chunk_id']}") & 0x7FFFFFFFFFFFFFFF,
+                id=self._generate_point_id(chunk),
                 vector=embedding,
-                payload={
-                    'text': chunk.text,
-                    'document_id': chunk.metadata['document_id'],
-                    'filename': chunk.metadata['filename'],
-                    'file_type': chunk.metadata['file_type'],
-                    'chunk_id': chunk.metadata['chunk_id'],
-                    'page_number': chunk.metadata.get('page_number'),
-                    'sheet_name': chunk.metadata.get('sheet_name'),
-                }
+                payload=payload
             )
             points.append(point)
         
@@ -100,24 +120,99 @@ class VectorStoreService:
         
         logger.info(f"Added {len(points)} chunks to Qdrant")
     
+    def _build_search_filter(
+        self,
+        document_ids: Optional[List[str]] = None,
+        file_types: Optional[List[str]] = None,
+        section_titles: Optional[List[str]] = None,
+        granularity: Optional[str] = None,
+        min_token_count: Optional[int] = None,
+        max_token_count: Optional[int] = None
+    ) -> Optional[Filter]:
+        """Build a search filter based on provided criteria"""
+        filter_conditions = []
+        
+        # Filter by document IDs
+        if document_ids:
+            filter_conditions.append(
+                FieldCondition(
+                    key="document_id",
+                    match=MatchAny(any=document_ids)
+                )
+            )
+        
+        # Filter by file types
+        if file_types:
+            filter_conditions.append(
+                FieldCondition(
+                    key="file_type",
+                    match=MatchAny(any=file_types)
+                )
+            )
+        
+        # Filter by section titles (partial match)
+        if section_titles:
+            section_conditions = []
+            for title in section_titles:
+                section_conditions.append(
+                    FieldCondition(
+                        key="section_title",
+                        match=MatchText(text=title)
+                    )
+                )
+            # Add section conditions with OR logic
+            if section_conditions:
+                filter_conditions.append(Filter(should=section_conditions))
+        
+        # Filter by granularity
+        if granularity:
+            filter_conditions.append(
+                FieldCondition(
+                    key="granularity",
+                    match=MatchValue(value=granularity)
+                )
+            )
+        
+        # Filter by token count range
+        if min_token_count is not None or max_token_count is not None:
+            token_range = {}
+            if min_token_count is not None:
+                token_range["gte"] = min_token_count
+            if max_token_count is not None:
+                token_range["lte"] = max_token_count
+                
+            filter_conditions.append(
+                FieldCondition(
+                    key="token_count",
+                    range=Range(**token_range)
+                )
+            )
+        
+        # Return the combined filter if conditions exist
+        if filter_conditions:
+            return Filter(must=filter_conditions)
+        return None
+    
     def search(
         self,
         query_embedding: List[float],
         document_ids: Optional[List[str]] = None,
+        file_types: Optional[List[str]] = None,
+        section_titles: Optional[List[str]] = None,
+        granularity: Optional[str] = None,
+        min_token_count: Optional[int] = None,
+        max_token_count: Optional[int] = None,
         top_k: int = 5
     ) -> List[Dict[str, Any]]:
-        """Search for similar chunks"""
-        search_filter = None
-        
-        if document_ids:
-            search_filter = Filter(
-                must=[
-                    FieldCondition(
-                        key="document_id",
-                        match=MatchAny(any=document_ids)
-                    )
-                ]
-            )
+        """Search for similar chunks with advanced filtering"""
+        search_filter = self._build_search_filter(
+            document_ids=document_ids,
+            file_types=file_types,
+            section_titles=section_titles,
+            granularity=granularity,
+            min_token_count=min_token_count,
+            max_token_count=max_token_count
+        )
         
         results = self.client.search(
             collection_name=self.collection_name,
@@ -128,16 +223,60 @@ class VectorStoreService:
         
         formatted_results = []
         for result in results:
-            formatted_results.append({
-                'text': result.payload['text'],
-                'document_id': result.payload['document_id'],
-                'filename': result.payload['filename'],
-                'page_number': result.payload.get('page_number'),
-                'sheet_name': result.payload.get('sheet_name'),
-                'score': result.score
-            })
+            # Extract all payload fields into the result
+            result_dict = {
+                'score': result.score,
+                **result.payload
+            }
+            formatted_results.append(result_dict)
         
         return formatted_results
+    
+    def hybrid_search(
+        self,
+        query_text: str,
+        query_embedding: List[float],
+        document_ids: Optional[List[str]] = None,
+        top_k: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Perform hybrid search combining vector similarity and keyword matching
+        
+        This method combines vector search with keyword search to improve retrieval
+        for queries that have specific keywords or terms.
+        """
+        # Extract keywords from the query (simple approach)
+        keywords = [word.lower() for word in query_text.split() if len(word) > 3]
+        
+        # Perform vector search
+        vector_results = self.search(
+            query_embedding=query_embedding,
+            document_ids=document_ids,
+            top_k=top_k * 2  # Get more results for hybrid reranking
+        )
+        
+        if not vector_results:
+            return []
+        
+        # Rerank results based on keyword presence
+        for result in vector_results:
+            # Initialize keyword score
+            keyword_score = 0
+            text_lower = result['text'].lower()
+            
+            # Check for keyword presence
+            for keyword in keywords:
+                if keyword in text_lower:
+                    keyword_score += 0.1  # Boost score for each keyword found
+            
+            # Combine vector similarity with keyword score
+            result['hybrid_score'] = result['score'] + keyword_score
+        
+        # Sort by hybrid score
+        vector_results.sort(key=lambda x: x['hybrid_score'], reverse=True)
+        
+        # Return top_k results
+        return vector_results[:top_k]
     
     def delete_document(self, document_id: str):
         """Delete all chunks for a document"""
@@ -173,4 +312,3 @@ def get_vector_store() -> VectorStoreService:
     if _vector_store is None:
         _vector_store = VectorStoreService()
     return _vector_store
-

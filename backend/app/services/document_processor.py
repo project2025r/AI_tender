@@ -1,7 +1,8 @@
 import os
 import uuid
 import logging
-from typing import List, Dict, Any
+import re
+from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 import PyPDF2
 from docx import Document as DocxDocument
@@ -9,6 +10,14 @@ import openpyxl
 import pandas as pd
 import tiktoken
 from app.config import get_settings
+import nltk
+from nltk.tokenize import sent_tokenize
+
+# Download NLTK data for sentence tokenization
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt', quiet=True)
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +34,7 @@ class DocumentProcessor:
         self.tokenizer = tiktoken.get_encoding("cl100k_base")
     
     def extract_text_from_pdf(self, file_path: str) -> List[Dict[str, Any]]:
-        """Extract text from PDF file with page metadata"""
+        """Extract text from PDF file with page metadata and section detection"""
         pages_data = []
         
         try:
@@ -34,45 +43,127 @@ class DocumentProcessor:
                 for page_num, page in enumerate(pdf_reader.pages, start=1):
                     text = page.extract_text()
                     if text.strip():
-                        pages_data.append({
-                            'text': text,
-                            'page_number': page_num,
-                            'source_type': 'pdf'
-                        })
-            logger.info(f"Extracted {len(pages_data)} pages from PDF: {file_path}")
+                        # Try to detect sections in the PDF
+                        sections = self._detect_sections(text)
+                        
+                        if sections:
+                            # If sections were detected, add each as a separate entry
+                            for section_title, section_text in sections:
+                                pages_data.append({
+                                    'text': section_text,
+                                    'page_number': page_num,
+                                    'source_type': 'pdf',
+                                    'section_title': section_title
+                                })
+                        else:
+                            # Otherwise add the entire page
+                            pages_data.append({
+                                'text': text,
+                                'page_number': page_num,
+                                'source_type': 'pdf'
+                            })
+            logger.info(f"Extracted {len(pages_data)} sections/pages from PDF: {file_path}")
         except Exception as e:
             logger.error(f"Error extracting PDF {file_path}: {e}")
             raise
         
         return pages_data
     
+    def _detect_sections(self, text: str) -> List[Tuple[str, str]]:
+        """Detect sections in text based on headings and formatting"""
+        # Common section heading patterns in tender documents
+        section_patterns = [
+            r'^(?:\d+\.)+\s+([A-Z][A-Za-z\s]+)$',  # Numbered sections like "1.2 General Requirements"
+            r'^([A-Z][A-Z\s]+):',                  # ALL CAPS sections like "GENERAL REQUIREMENTS:"
+            r'^([A-Z][A-Za-z\s]+):\s*$',           # Title with colon like "Scope of Work:"
+            r'^([A-Z][A-Za-z\s&]+)$'               # Standalone capitalized titles
+        ]
+        
+        lines = text.split('\n')
+        sections = []
+        current_section = None
+        current_content = []
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                if current_content:
+                    current_content.append("")  # Keep paragraph breaks
+                continue
+                
+            # Check if line matches any section pattern
+            is_section_header = False
+            for pattern in section_patterns:
+                match = re.match(pattern, line)
+                if match:
+                    # If we were building a previous section, save it
+                    if current_section and current_content:
+                        sections.append((current_section, '\n'.join(current_content)))
+                    
+                    # Start a new section
+                    current_section = match.group(1)
+                    current_content = []
+                    is_section_header = True
+                    break
+            
+            if not is_section_header:
+                # If no section has been identified yet, start with "Introduction"
+                if current_section is None:
+                    current_section = "Introduction"
+                current_content.append(line)
+        
+        # Add the last section
+        if current_section and current_content:
+            sections.append((current_section, '\n'.join(current_content)))
+            
+        return sections
+    
     def extract_text_from_docx(self, file_path: str) -> List[Dict[str, Any]]:
-        """Extract text from Word document"""
-        pages_data = []
+        """Extract text from Word document with section detection"""
+        sections_data = []
         
         try:
             doc = DocxDocument(file_path)
-            full_text = []
+            current_section = "Introduction"
+            current_content = []
             
             for para in doc.paragraphs:
-                if para.text.strip():
-                    full_text.append(para.text)
+                text = para.text.strip()
+                if not text:
+                    if current_content:
+                        current_content.append("")  # Keep paragraph breaks
+                    continue
+                
+                # Check if paragraph is a heading based on style
+                if para.style.name.startswith('Heading'):
+                    # If we were building a previous section, save it
+                    if current_content:
+                        sections_data.append({
+                            'text': '\n'.join(current_content),
+                            'section_title': current_section,
+                            'source_type': 'docx'
+                        })
+                    
+                    # Start a new section
+                    current_section = text
+                    current_content = []
+                else:
+                    current_content.append(text)
             
-            # Combine all paragraphs
-            text = '\n'.join(full_text)
-            if text.strip():
-                pages_data.append({
-                    'text': text,
-                    'page_number': 1,
+            # Add the last section
+            if current_content:
+                sections_data.append({
+                    'text': '\n'.join(current_content),
+                    'section_title': current_section,
                     'source_type': 'docx'
                 })
             
-            logger.info(f"Extracted text from DOCX: {file_path}")
+            logger.info(f"Extracted {len(sections_data)} sections from DOCX: {file_path}")
         except Exception as e:
             logger.error(f"Error extracting DOCX {file_path}: {e}")
             raise
         
-        return pages_data
+        return sections_data
     
     def extract_text_from_excel(self, file_path: str) -> List[Dict[str, Any]]:
         """Extract text from Excel file with sheet metadata"""
@@ -131,34 +222,107 @@ class DocumentProcessor:
         """Count tokens in text"""
         return len(self.tokenizer.encode(text))
     
-    def chunk_text(self, text: str, metadata: Dict[str, Any]) -> List[DocumentChunk]:
-        """Split text into chunks with overlap"""
-        tokens = self.tokenizer.encode(text)
+    def chunk_text_semantic(self, text: str, metadata: Dict[str, Any]) -> List[DocumentChunk]:
+        """Split text into chunks based on semantic boundaries"""
+        # First, split by paragraphs
+        paragraphs = re.split(r'\n\s*\n', text)
+        
+        # Then split long paragraphs into sentences
+        sentences = []
+        for para in paragraphs:
+            if self.count_tokens(para) > self.settings.chunk_size:
+                # If paragraph is too long, split into sentences
+                para_sentences = sent_tokenize(para)
+                sentences.extend(para_sentences)
+            else:
+                # Keep short paragraphs intact
+                sentences.append(para)
+        
         chunks = []
-        
-        chunk_size = self.settings.chunk_size
-        chunk_overlap = self.settings.chunk_overlap
-        
-        start = 0
+        current_chunk = []
+        current_token_count = 0
         chunk_id = 0
         
-        while start < len(tokens):
-            end = start + chunk_size
-            chunk_tokens = tokens[start:end]
-            chunk_text = self.tokenizer.decode(chunk_tokens)
+        for sentence in sentences:
+            sentence_tokens = self.tokenizer.encode(sentence)
+            sentence_token_count = len(sentence_tokens)
+            
+            # If adding this sentence would exceed the chunk size, 
+            # finalize the current chunk and start a new one
+            if current_token_count + sentence_token_count > self.settings.chunk_size and current_chunk:
+                chunk_text = " ".join(current_chunk)
+                
+                # Create chunk with metadata
+                chunk_metadata = metadata.copy()
+                chunk_metadata['chunk_id'] = chunk_id
+                chunk_metadata['token_count'] = current_token_count
+                
+                chunks.append(DocumentChunk(chunk_text, chunk_metadata))
+                
+                # Start a new chunk
+                current_chunk = [sentence]
+                current_token_count = sentence_token_count
+                chunk_id += 1
+            else:
+                # Add sentence to current chunk
+                current_chunk.append(sentence)
+                current_token_count += sentence_token_count
+        
+        # Add the last chunk if it's not empty
+        if current_chunk:
+            chunk_text = " ".join(current_chunk)
             
             # Create chunk with metadata
             chunk_metadata = metadata.copy()
             chunk_metadata['chunk_id'] = chunk_id
-            chunk_metadata['start_token'] = start
-            chunk_metadata['end_token'] = end
+            chunk_metadata['token_count'] = current_token_count
             
             chunks.append(DocumentChunk(chunk_text, chunk_metadata))
-            
-            start += chunk_size - chunk_overlap
-            chunk_id += 1
         
         return chunks
+    
+    def chunk_text_hierarchical(self, text: str, metadata: Dict[str, Any]) -> List[DocumentChunk]:
+        """Create hierarchical chunks with different granularity levels"""
+        # Level 1: Section-level chunks (already handled during extraction)
+        section_chunk = DocumentChunk(text, {
+            **metadata,
+            'chunk_id': f"{metadata.get('section_title', 'section')}_full",
+            'granularity': 'section',
+            'token_count': self.count_tokens(text)
+        })
+        
+        # Level 2: Paragraph-level chunks
+        paragraphs = re.split(r'\n\s*\n', text)
+        paragraph_chunks = []
+        
+        for i, para in enumerate(paragraphs):
+            if para.strip():
+                para_metadata = metadata.copy()
+                para_metadata['chunk_id'] = f"{metadata.get('section_title', 'section')}_p{i}"
+                para_metadata['granularity'] = 'paragraph'
+                para_metadata['paragraph_index'] = i
+                para_metadata['token_count'] = self.count_tokens(para)
+                
+                paragraph_chunks.append(DocumentChunk(para, para_metadata))
+        
+        # Level 3: Semantic chunks (for long paragraphs)
+        semantic_chunks = []
+        for para_chunk in paragraph_chunks:
+            if para_chunk.metadata['token_count'] > self.settings.chunk_size:
+                # Further split long paragraphs
+                para_semantic_chunks = self.chunk_text_semantic(
+                    para_chunk.text, 
+                    {**para_chunk.metadata, 'granularity': 'semantic'}
+                )
+                semantic_chunks.extend(para_semantic_chunks)
+            else:
+                # Keep short paragraphs as is
+                semantic_chunks.append(para_chunk)
+        
+        # Combine all levels
+        all_chunks = [section_chunk] + semantic_chunks
+        
+        return all_chunks
     
     def process_document(self, file_path: str, filename: str, document_id: str) -> List[DocumentChunk]:
         """Process a document and return chunks"""
@@ -182,8 +346,8 @@ class DocumentProcessor:
                 **section_data
             }
             
-            # Chunk the text
-            chunks = self.chunk_text(text, metadata)
+            # Use hierarchical chunking
+            chunks = self.chunk_text_hierarchical(text, metadata)
             all_chunks.extend(chunks)
         
         logger.info(f"Processed document {filename}: {len(all_chunks)} chunks created")
@@ -193,4 +357,3 @@ class DocumentProcessor:
 def get_document_processor() -> DocumentProcessor:
     """Get document processor instance"""
     return DocumentProcessor()
-
