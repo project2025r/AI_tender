@@ -1,0 +1,72 @@
+{
+  "roles": [
+    {
+      "name": "Project Manager",
+      "description": "Manages projects, can read, write, and approve",
+      "permissions": ["Read", "Write", "Approve"]
+    },
+    {
+      "name": "Discipline Engineer",
+      "description": "Works on engineering tasks, can read and write",
+      "permissions": ["Read", "Write"]
+    },
+    {
+      "name": "Review Engineer",
+      "description": "Reviews work, can read and approve",
+      "permissions": ["Read", "Approve"]
+    },
+    {
+      "name": "Administrator",
+      "description": "Full system access with all permissions",
+      "permissions": ["Read", "Write", "Approve", "Admin"]
+    }
+  ],
+  "dummy_users": [
+    {
+      "email": "admin@example.com",
+      "password": "DemoPassword123!",
+      "full_name": "System Administrator",
+      "role": "Administrator",
+      "note": "CHANGE PASSWORD IN PRODUCTION"
+    },
+    {
+      "email": "john.manager@example.com",
+      "password": "DemoPassword123!",
+      "full_name": "John Manager",
+      "role": "Project Manager",
+      "note": "CHANGE PASSWORD IN PRODUCTION"
+    },
+    {
+      "email": "sarah.engineer@example.com",
+      "password": "DemoPassword123!",
+      "full_name": "Sarah Engineer",
+      "role": "Discipline Engineer",
+      "note": "CHANGE PASSWORD IN PRODUCTION"
+    },
+    {
+      "email": "mike.reviewer@example.com",
+      "password": "DemoPassword123!",
+      "full_name": "Mike Reviewer",
+      "role": "Review Engineer",
+      "note": "CHANGE PASSWORD IN PRODUCTION"
+    }
+  ],
+  "permissions": [
+    {
+      "name": "Read",
+      "description": "Can view/read data"
+    },
+    {
+      "name": "Write",
+      "description": "Can create and edit data"
+    },
+    {
+      "name": "Approve",
+      "description": "Can approve submissions"
+    },
+    {
+      "name": "Admin",
+      "description": "Full administrative access"
+    }
+  ]
+}

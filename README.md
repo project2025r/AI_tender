@@ -263,3 +263,67 @@ For issues and questions:
 - Cloud deployment options
 
 
+
+## Authentication & Role-Based Access Control
+
+This application now includes a complete authentication system with role-based access control (RBAC).
+
+### Quick Auth Setup
+
+1. **Configure Supabase** (see detailed guide in [AUTH_SETUP_GUIDE.md](AUTH_SETUP_GUIDE.md))
+   ```bash
+   # Update backend/.env with your Supabase credentials
+   SUPABASE_URL=https://your-project.supabase.co
+   SUPABASE_ANON_KEY=your_anon_key_here
+   ```
+
+2. **Database migrations are already applied** with roles and permissions
+
+3. **Create dummy users** via signup page or API (see SEED_DATA.json for credentials)
+
+4. **Assign roles** to users (requires admin - see AUTH_SETUP_GUIDE.md)
+
+### Roles & Permissions
+
+| Role                 | Read | Write | Approve | Admin |
+|---------------------|------|-------|---------|-------|
+| Project Manager     | ✓    | ✓     | ✓       | ✗     |
+| Discipline Engineer | ✓    | ✓     | ✗       | ✗     |
+| Review Engineer     | ✓    | ✗     | ✓       | ✗     |
+| Administrator       | ✓    | ✓     | ✓       | ✓     |
+
+### Demo Credentials
+
+**IMPORTANT:** These are for DEVELOPMENT ONLY. Change passwords in production!
+
+- Admin: admin@example.com / DemoPassword123!
+- Project Manager: john.manager@example.com / DemoPassword123!
+- Engineer: sarah.engineer@example.com / DemoPassword123!
+- Reviewer: mike.reviewer@example.com / DemoPassword123!
+
+**Note:** Users must be created via signup first, then have roles assigned by an admin.
+
+### Auth API Endpoints
+
+- `POST /api/auth/signup` - Register new user
+- `POST /api/auth/login` - Login
+- `POST /api/auth/forgot-password` - Request password reset
+- `POST /api/auth/reset-password` - Reset password with token
+- `GET /api/auth/me` - Get current user info
+- `POST /api/auth/assign-role` - Assign role (Admin only)
+
+### Protected Project Endpoints
+
+Example endpoints demonstrating permission checks:
+
+- `GET /api/projects` - List projects (Read)
+- `POST /api/projects` - Create project (Write)
+- `POST /api/projects/:id/approve` - Approve project (Approve)
+- `DELETE /api/projects/:id` - Delete project (Admin)
+
+### Admin Endpoints
+
+- `GET /api/admin/users` - List all users with roles (Admin only)
+
+For detailed authentication setup and usage, see [AUTH_SETUP_GUIDE.md](AUTH_SETUP_GUIDE.md).
+

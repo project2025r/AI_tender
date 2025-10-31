@@ -1,67 +1,37 @@
-import React, { useState } from 'react';
-import DocumentUpload from './components/DocumentUpload';
-import DocumentList from './components/DocumentList';
-import ChatInterface from './components/ChatInterface';
+import React from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { AuthProvider } from './contexts/AuthContext';
+import ProtectedRoute from './components/ProtectedRoute';
+import Login from './pages/Login';
+import Signup from './pages/Signup';
+import ForgotPassword from './pages/ForgotPassword';
+import ResetPassword from './pages/ResetPassword';
+import AppContent from './AppContent';
 
 function App() {
-  const [selectedDocuments, setSelectedDocuments] = useState([]);
-  const [documents, setDocuments] = useState([]);
-  const [refreshTrigger, setRefreshTrigger] = useState(0);
-
-  const handleUploadSuccess = (uploadResponse) => {
-    // Trigger a refresh of the document list
-    setRefreshTrigger(prev => prev + 1);
-  };
-
-  const handleDocumentSelect = (documentId) => {
-    setSelectedDocuments(prev => {
-      if (prev.includes(documentId)) {
-        return prev.filter(id => id !== documentId);
-      } else {
-        return [...prev, documentId];
-      }
-    });
-  };
-
-  const handleDocumentsChange = (newDocuments) => {
-    setDocuments(newDocuments);
-  };
-
   return (
-    <div className="app">
-      <header className="app-header">
-        <h1>📋 Tender Document Chatbot</h1>
-        <p className="app-subtitle">Upload tender documents and chat with AI</p>
-      </header>
+    <Router>
+      <AuthProvider>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="/signup" element={<Signup />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
 
-      <div className="app-container">
-        <aside className="sidebar">
-          <div className="sidebar-section">
-            <h2>Upload Document</h2>
-            <DocumentUpload onUploadSuccess={handleUploadSuccess} />
-          </div>
-
-          <div className="sidebar-section">
-            <DocumentList
-              key={refreshTrigger}
-              onDocumentSelect={handleDocumentSelect}
-              selectedDocuments={selectedDocuments}
-              onDocumentsChange={handleDocumentsChange}
-            />
-          </div>
-        </aside>
-
-        <main className="main-content">
-          <ChatInterface
-            selectedDocuments={selectedDocuments}
-            documents={documents}
+          <Route
+            path="/"
+            element={
+              <ProtectedRoute requiredPermission="Read">
+                <AppContent />
+              </ProtectedRoute>
+            }
           />
-        </main>
-      </div>
-    </div>
+
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </AuthProvider>
+    </Router>
   );
 }
 
 export default App;
-
-

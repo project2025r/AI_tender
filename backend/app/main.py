@@ -2,7 +2,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import documents, chat
+from app.routers import documents, chat, auth, projects, admin
 from app.models.schemas import HealthCheckResponse
 from app.services.embeddings import get_embedding_service
 from app.services.vector_store import get_vector_store
@@ -34,8 +34,11 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(auth.router)
 app.include_router(documents.router)
 app.include_router(chat.router)
+app.include_router(projects.router)
+app.include_router(admin.router)
 
 
 @app.on_event("startup")
